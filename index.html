@@ -1,112 +1,711 @@
 <!DOCTYPE html>
-<html lang="it"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Partita del Giovedì</title>
-<style>
-:root{--bg:#f4f6f2;--card:#fff;--tx:#1b2418;--mu:#67725f;--ac:#2e7d32;--ac2:#e8f3e8;--bd:#dfe5da;--wa:#25d366;--er:#c62828}
-@media (prefers-color-scheme:dark){:root{--bg:#121712;--card:#1c231b;--tx:#eaf0e6;--mu:#93a08a;--ac:#66bb6a;--ac2:#243325;--bd:#2e392c}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:520px;margin:0 auto;padding:14px}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
-h1{font-size:20px;margin:0 0 2px}h2{font-size:15px;margin:0 0 8px}
-.mu{color:var(--mu);font-size:14px}.row{display:flex;gap:8px;flex-wrap:wrap}
-.big{font-size:34px;font-weight:700;color:var(--ac)}
-button,input,a.wa{font:inherit;border-radius:10px;border:1px solid var(--bd);padding:10px 12px;background:var(--card);color:var(--tx)}
-input{width:100%;margin-bottom:8px}
-button{cursor:pointer;font-weight:600}button.p{background:var(--ac);color:#fff;border-color:var(--ac)}
-a.wa{background:var(--wa);color:#000;border-color:var(--wa);text-decoration:none;display:inline-block;font-weight:600}
-button.d{color:var(--er)}.grow{flex:1}
-ol{margin:0;padding-left:22px}li{padding:3px 0}li.me{font-weight:700;color:var(--ac)}
-.err{color:var(--er);font-size:14px;min-height:18px}
-.note{background:var(--ac2);border-radius:10px;padding:10px;margin-top:8px;font-size:14px}
-.bar{height:8px;background:var(--ac2);border-radius:5px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--ac)}
-</style></head><body><main>
-<div class="card" id="head">Caricamento…</div>
-<div id="auth" class="card"></div>
-<div id="notice"></div>
-<div class="card"><h2>⚽ In campo</h2><ol id="conf"></ol></div>
-<div class="card"><h2>🪑 Riserve / sostituti</h2><ol id="res"></ol><div class="mu" id="resHint"></div></div>
-<div class="card" id="admin" hidden></div>
-</main>
-<script type="module">
-import{initializeApp}from"https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-import{getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut}from"https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import{getFirestore,doc,setDoc,deleteDoc,collection,onSnapshot,serverTimestamp,writeBatch}from"https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+<html lang="it">
 
-/* ====== DA MODIFICARE ====== */
-const firebaseConfig={apiKey: "AIzaSyCkBU0ZMdepE-Tg9CV_fRu4ag9LxxSL4Do",
-	  authDomain: "match-organizer-5e6fe.firebaseapp.com",
-	  projectId: "match-organizer-5e6fe",
-	  storageBucket: "match-organizer-5e6fe.firebasestorage.app",
-	  messagingSenderId: "605165237016",
-	  appId: "1:605165237016:web:39d76650b23967cd62e46d"};
-const ADMIN="altair9510";                                      // username dell'organizzatore (deve coincidere con le regole Firestore)
-const LAT=41.87242232597652,LON=12.551317829923443;            // coordinate del campo (per il meteo)
-const DOMAIN="@partita.app";                                   // dominio fittizio per gli username
-/* =========================== */
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Partita del Giovedì</title>
+  <style>
+    :root {
+      --bg: #f4f6f2;
+      --card: #fff;
+      --tx: #1b2418;
+      --mu: #67725f;
+      --ac: #2e7d32;
+      --ac2: #e8f3e8;
+      --bd: #dfe5da;
+      --wa: #25d366;
+      --er: #c62828;
+    }
 
-const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);
-const DEF={time:"21:00",place:"Centro Sportivo Certosa",cap:10,date:""};
-let match={...DEF},entries=[],me=null,weather="";
-const $=id=>document.getElementById(id),esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const fmt=d=>d?d.split("-").reverse().slice(0,2).join("/"):"";
-function nextThu(){const d=new Date();d.setDate(d.getDate()+((4-d.getDay()+7)%7));return d.toISOString().slice(0,10)}
-function derive(list,cap){const pl=list.filter(e=>e.role==="player").sort((a,b)=>a.ts-b.ts),sb=list.filter(e=>e.role==="sub").sort((a,b)=>a.ts-b.ts);return{conf:pl.slice(0,cap),res:pl.slice(cap).concat(sb)}}
-const err=t=>{const e=$("err");if(e)e.textContent=t};
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121712;
+        --card: #1c231b;
+        --tx: #eaf0e6;
+        --mu: #93a08a;
+        --ac: #66bb6a;
+        --ac2: #243325;
+        --bd: #2e392c;
+      }
+    }
 
-function render(){
-  const{conf,res}=derive(entries,match.cap),pct=Math.min(100,conf.length/match.cap*100),mine=me&&entries.find(e=>e.name===me);
-  $("head").innerHTML=`<h1>Partita di Giovedì ${fmt(match.date)}</h1><div class="mu">📍 ${esc(match.place)} · 🕘 ${esc(match.time)}</div>
-  <div class="row" style="align-items:baseline;margin-top:6px"><span class="big">${conf.length}/${match.cap}</span><span class="mu">giocatori · ${res.length} in panchina</span></div>
-  <div class="bar"><i style="width:${pct}%"></i></div>${weather?`<div class="note">${weather}</div>`:""}`;
-  if(!me){$("auth").innerHTML=`<h2>Entra con il tuo username</h2><input id="u" placeholder="username (unico)" autocapitalize="none" autocomplete="username"><input id="pw" type="password" placeholder="password (min. 6 caratteri)" autocomplete="current-password"><div class="row"><button class="p grow" id="reg">Registrati</button><button class="grow" id="log">Accedi</button></div><div class="err" id="err"></div>`;
-    $("reg").onclick=()=>authGo(true);$("log").onclick=()=>authGo(false)}
-  else{const st=mine?(mine.role==="sub"?"Sei sostituto":conf.find(e=>e.name===me)?"Sei in campo ✅":"Sei in lista d'attesa"):"Non sei iscritto";
-    $("auth").innerHTML=`<div class="row" style="justify-content:space-between;align-items:center"><div><b>@${esc(me)}</b><div class="mu">${st}</div></div><button id="out">Esci</button></div><div class="row" style="margin-top:10px" id="acts"></div><div class="err" id="err"></div>`;
-    $("out").onclick=()=>signOut(auth);
-    const b=(t,c,f)=>{const x=document.createElement("button");x.textContent=t;x.className=c+" grow";x.onclick=f;$("acts").append(x)};
-    if(!mine){b("Ci sono!","p",()=>join("player"));b("Sostituto","",()=>join("sub"))}
-    else{b("Ritirati","d",leave);b(mine.role==="sub"?"Passa a giocatore":"Passa a sostituto",mine.role==="sub"?"p":"",()=>join(mine.role==="sub"?"player":"sub"))}}
-  const li=a=>a.map(e=>`<li class="${e.name===me?"me":""}">@${esc(e.name)}</li>`).join("")||`<li class="mu" style="list-style:none">— nessuno —</li>`;
-  $("conf").innerHTML=li(conf);$("res").innerHTML=li(res);$("resHint").textContent=res.length?"Il primo della lista entra se qualcuno si ritira.":"";
-  const a=$("admin"),isAdmin=me===ADMIN;a.hidden=!isAdmin;
-  if(isAdmin&&!a.dataset.on){a.dataset.on=1;a.innerHTML=`<h2>⚙️ Organizzatore</h2><input id="a_date" type="date"><input id="a_place" placeholder="Luogo"><div class="row"><input id="a_time" placeholder="Ora" style="flex:1"><input id="a_cap" type="number" min="2" placeholder="N. giocatori" style="flex:1"></div><div class="row"><button class="p grow" id="a_save">Salva e avvisa</button><button class="d" id="a_reset">Nuova settimana</button></div><div class="mu">“Nuova settimana” azzera gli iscritti.</div>`;
-    $("a_date").value=match.date||nextThu();$("a_place").value=match.place;$("a_time").value=match.time;$("a_cap").value=match.cap;
-    $("a_save").onclick=()=>saveMatch(false);$("a_reset").onclick=()=>saveMatch(true)}
-}
-function say(msg){$("notice").innerHTML=`<div class="card"><div class="mu">Avvisa il gruppo WhatsApp:</div><div style="margin:6px 0">${esc(msg)}</div><a class="wa" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">Invia su WhatsApp</a> <button id="cl">Chiudi</button></div>`;$("cl").onclick=()=>($("notice").innerHTML="")}
+    * {
+      box-sizing: border-box;
+    }
 
-async function authGo(reg){
-  const u=$("u").value.trim().toLowerCase(),p=$("pw").value;
-  if(!/^[a-z0-9_.-]{3,20}$/.test(u))return err("Username: 3-20 caratteri (lettere, numeri, . _ -)");
-  if(p.length<6)return err("Password: almeno 6 caratteri");
-  try{reg?await createUserWithEmailAndPassword(auth,u+DOMAIN,p):await signInWithEmailAndPassword(auth,u+DOMAIN,p)}
-  catch(e){err(e.code==="auth/email-already-in-use"?"Username già preso":e.code==="auth/weak-password"?"Password troppo debole":reg?"Registrazione non riuscita":"Username o password errati")}}
-async function put(name,role){try{const r=doc(db,"entries",name);role?await setDoc(r,{name,role,ts:serverTimestamp()}):await deleteDoc(r)}catch(e){err("Operazione non riuscita")}}
-async function join(role){
-  const old=entries.find(e=>e.name===me),after=derive(entries.filter(e=>e.name!==me).concat({name:me,role,ts:old&&old.role===role?old.ts:Date.now()}),match.cap);
-  await put(me,role);const inn=after.conf.some(e=>e.name===me);
-  say(role==="sub"?`@${me} è sostituto. In campo ${after.conf.length}/${match.cap}.`:inn?`@${me} ci sta! In campo ${after.conf.length}/${match.cap}.`:`@${me} è in lista d'attesa (campo pieno).`)}
-async function leave(){
-  const before=derive(entries,match.cap).conf.map(e=>e.name),after=derive(entries.filter(e=>e.name!==me),match.cap),up=after.conf.find(e=>!before.includes(e.name));
-  await put(me,null);say(`@${me} si è ritirato.${before.includes(me)&&up?` @${up.name} entra dalla panchina!`:""} In campo ${after.conf.length}/${match.cap}.`)}
-async function saveMatch(reset){
-  const m={date:$("a_date").value,place:$("a_place").value.trim()||DEF.place,time:$("a_time").value.trim()||DEF.time,cap:Math.max(2,parseInt($("a_cap").value)||DEF.cap)};
-  if(reset&&!confirm("Azzerare tutti gli iscritti?"))return;
-  try{await setDoc(doc(db,"match","current"),m);if(reset){const b=writeBatch(db);entries.forEach(e=>b.delete(doc(db,"entries",e.name)));await b.commit()}}catch(e){return alert("Non autorizzato.")}
-  say(reset?`Partita di Giovedì ${fmt(m.date)}. Chi gioca? ${location.href.split("#")[0]}`:`Aggiornamento partita ${fmt(m.date)}: ${m.place}, ore ${m.time}. Giocatori: ${m.cap}.${weather?" Meteo: "+weather:""}`)}
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--tx);
+      font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
 
-const WMO=c=>c===0?"☀️ sereno":c<3?"⛅ poco nuvoloso":c<49?"☁️ nuvoloso/nebbia":c<70?"🌧️ pioggia":c<80?"❄️ neve":"⛈️ temporale";
-async function loadWeather(){
-  weather="";
-  try{const d=match.date;if(!d)return;const diff=(new Date(d)-new Date(new Date().toISOString().slice(0,10)))/864e5;if(diff<0||diff>15)return;
-    const r=await(await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=temperature_2m,precipitation_probability,weather_code&start_date=${d}&end_date=${d}&timezone=auto`)).json();
-    const h=Math.min(23,parseInt(match.time)||21),H=r.hourly;
-    weather=`${WMO(H.weather_code[h])}, ${Math.round(H.temperature_2m[h])}°C, pioggia ${H.precipitation_probability[h]}%`}catch(e){}
-  render()}
+    main {
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 14px;
+    }
 
-onAuthStateChanged(auth,u=>{me=u?u.email.split("@")[0]:null;$("admin").dataset.on="";render()});
-onSnapshot(doc(db,"match","current"),s=>{match={...DEF,...(s.exists()?s.data():{})};$("admin").dataset.on="";render();loadWeather()});
-onSnapshot(collection(db,"entries"),q=>{entries=q.docs.map(d=>{const x=d.data();return{name:x.name,role:x.role,ts:x.ts?.toMillis?.()??Date.now()}});render()});
-render();
-</script></body></html>
+    .card {
+      background: var(--card);
+      border: 1px solid var(--bd);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      font-size: 20px;
+      margin: 0 0 2px;
+    }
+
+    h2 {
+      font-size: 15px;
+      margin: 0 0 8px;
+    }
+
+    .mu {
+      color: var(--mu);
+      font-size: 14px;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .big {
+      font-size: 34px;
+      font-weight: 700;
+      color: var(--ac);
+    }
+
+    button,
+    input,
+    a.wa {
+      font: inherit;
+      border-radius: 10px;
+      border: 1px solid var(--bd);
+      padding: 10px 12px;
+      background: var(--card);
+      color: var(--tx);
+    }
+
+    input {
+      width: 100%;
+      margin-bottom: 8px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button.p {
+      background: var(--ac);
+      color: #fff;
+      border-color: var(--ac);
+    }
+
+    a.wa {
+      background: var(--wa);
+      color: #000;
+      border-color: var(--wa);
+      text-decoration: none;
+      display: inline-block;
+      font-weight: 600;
+    }
+
+    button.d {
+      color: var(--er);
+    }
+
+    .grow {
+      flex: 1;
+    }
+
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li {
+      padding: 3px 0;
+    }
+
+    li.me {
+      font-weight: 700;
+      color: var(--ac);
+    }
+
+    .err {
+      color: var(--er);
+      font-size: 14px;
+      min-height: 18px;
+    }
+
+    .note {
+      background: var(--ac2);
+      border-radius: 10px;
+      padding: 10px;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+
+    .bar {
+      height: 8px;
+      background: var(--ac2);
+      border-radius: 5px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+
+    .bar i {
+      display: block;
+      height: 100%;
+      background: var(--ac);
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <div class="card" id="head">Caricamento…</div>
+    <div class="card" id="auth"></div>
+    <div id="notice"></div>
+
+    <div class="card">
+      <h2>⚽ In campo</h2>
+      <ol id="conf"></ol>
+    </div>
+
+    <div class="card">
+      <h2>🪑 Riserve / sostituti</h2>
+      <ol id="res"></ol>
+      <div class="mu" id="resHint"></div>
+    </div>
+
+    <div class="card" id="admin" hidden></div>
+  </main>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+    import {
+      getAuth,
+      onAuthStateChanged,
+      createUserWithEmailAndPassword,
+      signInWithEmailAndPassword,
+      signOut
+    } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+    import {
+      getFirestore,
+      doc,
+      setDoc,
+      deleteDoc,
+      collection,
+      onSnapshot,
+      serverTimestamp,
+      writeBatch
+    } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+
+    /* ============================================================
+       CONFIG
+       ============================================================ */
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCkBU0ZMdepE-Tg9CV_fRu4ag9LxxSL4Do",
+      authDomain: "match-organizer-5e6fe.firebaseapp.com",
+      projectId: "match-organizer-5e6fe",
+      storageBucket: "match-organizer-5e6fe.firebasestorage.app",
+      messagingSenderId: "605165237016",
+      appId: "1:605165237016:web:39d76650b23967cd62e46d"
+    };
+
+    const ADMIN = "altair9510";                       // must match the Firestore rules
+    const LAT = 41.87242232597652;                    // pitch latitude (weather)
+    const LON = 12.551317829923443;                   // pitch longitude (weather)
+    const DOMAIN = "@partita.app";                    // fake email domain for usernames
+
+
+    /* ============================================================
+       STATE
+       ============================================================ */
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const DEF = {
+      time: "21:00",
+      place: "Centro Sportivo Certosa",
+      cap: 10,
+      date: ""
+    };
+
+    let match = { ...DEF };
+    let entries = [];
+    let me = null;
+    let weather = "";
+
+
+    /* ============================================================
+       HELPERS
+       ============================================================ */
+
+    const $ = id => document.getElementById(id);
+
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;"
+    }[c]));
+
+    // "2026-10-01" -> "01/10"
+    const fmt = d => d
+      ? d.split("-").reverse().slice(0, 2).join("/")
+      : "";
+
+    // Date of the next Thursday, as "YYYY-MM-DD"
+    function nextThu() {
+      const d = new Date();
+      d.setDate(d.getDate() + ((4 - d.getDay() + 7) % 7));
+      return d.toISOString().slice(0, 10);
+    }
+
+    // Splits entries into "in campo" (conf) and "riserve" (res).
+    // Players beyond the cap wait first, then declared substitutes.
+    function derive(list, cap) {
+      const players = list
+        .filter(e => e.role === "player")
+        .sort((a, b) => a.ts - b.ts);
+
+      const subs = list
+        .filter(e => e.role === "sub")
+        .sort((a, b) => a.ts - b.ts);
+
+      return {
+        conf: players.slice(0, cap),
+        res: players.slice(cap).concat(subs)
+      };
+    }
+
+    const err = t => {
+      const e = $("err");
+      if (e) e.textContent = t;
+    };
+
+
+    /* ============================================================
+       RENDER
+       ============================================================ */
+
+    function render() {
+      const { conf, res } = derive(entries, match.cap);
+      const pct = Math.min(100, conf.length / match.cap * 100);
+      const mine = me && entries.find(e => e.name === me);
+
+      // ----- Match header -----
+      $("head").innerHTML = `
+        <h1>Partita di Giovedì ${fmt(match.date)}</h1>
+
+        <div class="mu">
+          📍 ${esc(match.place)} · 🕘 ${esc(match.time)}
+        </div>
+
+        <div class="row" style="align-items: baseline; margin-top: 6px;">
+          <span class="big">${conf.length}/${match.cap}</span>
+          <span class="mu">giocatori · ${res.length} in panchina</span>
+        </div>
+
+        <div class="bar">
+          <i style="width: ${pct}%"></i>
+        </div>
+
+        ${weather ? `<div class="note">${weather}</div>` : ""}
+      `;
+
+      // ----- Login / user box -----
+      if (!me) {
+        $("auth").innerHTML = `
+          <h2>Entra con il tuo username</h2>
+
+          <input
+            id="u"
+            placeholder="username (unico)"
+            autocapitalize="none"
+            autocomplete="username">
+
+          <input
+            id="pw"
+            type="password"
+            placeholder="password (min. 6 caratteri)"
+            autocomplete="current-password">
+
+          <div class="row">
+            <button class="p grow" id="reg">Registrati</button>
+            <button class="grow" id="log">Accedi</button>
+          </div>
+
+          <div class="err" id="err"></div>
+        `;
+
+        $("reg").onclick = () => authGo(true);
+        $("log").onclick = () => authGo(false);
+      }
+      else {
+        let status;
+        if (!mine) {
+          status = "Non sei iscritto";
+        }
+        else if (mine.role === "sub") {
+          status = "Sei sostituto";
+        }
+        else if (conf.find(e => e.name === me)) {
+          status = "Sei in campo ✅";
+        }
+        else {
+          status = "Sei in lista d'attesa";
+        }
+
+        $("auth").innerHTML = `
+          <div class="row" style="justify-content: space-between; align-items: center;">
+            <div>
+              <b>@${esc(me)}</b>
+              <div class="mu">${status}</div>
+            </div>
+            <button id="out">Esci</button>
+          </div>
+
+          <div class="row" style="margin-top: 10px;" id="acts"></div>
+
+          <div class="err" id="err"></div>
+        `;
+
+        $("out").onclick = () => signOut(auth);
+
+        // Small helper: adds an action button to the row
+        const addButton = (text, cls, onClick) => {
+          const btn = document.createElement("button");
+          btn.textContent = text;
+          btn.className = cls + " grow";
+          btn.onclick = onClick;
+          $("acts").append(btn);
+        };
+
+        if (!mine) {
+          addButton("Ci sono!", "p", () => join("player"));
+          addButton("Sostituto", "", () => join("sub"));
+        }
+        else {
+          addButton("Ritirati", "d", leave);
+
+          if (mine.role === "sub") {
+            addButton("Passa a giocatore", "p", () => join("player"));
+          }
+          else {
+            addButton("Passa a sostituto", "", () => join("sub"));
+          }
+        }
+      }
+
+      // ----- Player lists -----
+      const listItems = arr =>
+        arr
+          .map(e => `
+            <li class="${e.name === me ? "me" : ""}">@${esc(e.name)}</li>
+          `)
+          .join("")
+        || `<li class="mu" style="list-style: none;">— nessuno —</li>`;
+
+      $("conf").innerHTML = listItems(conf);
+      $("res").innerHTML = listItems(res);
+      $("resHint").textContent = res.length
+        ? "Il primo della lista entra se qualcuno si ritira."
+        : "";
+
+      // ----- Admin panel (built once per login / match update) -----
+      const adminBox = $("admin");
+      const isAdmin = (me === ADMIN);
+      adminBox.hidden = !isAdmin;
+
+      if (isAdmin && !adminBox.dataset.on) {
+        adminBox.dataset.on = 1;
+
+        adminBox.innerHTML = `
+          <h2>⚙️ Organizzatore</h2>
+
+          <input id="a_date" type="date">
+          <input id="a_place" placeholder="Luogo">
+
+          <div class="row">
+            <input id="a_time" placeholder="Ora" style="flex: 1;">
+            <input id="a_cap" type="number" min="2" placeholder="N. giocatori" style="flex: 1;">
+          </div>
+
+          <div class="row">
+            <button class="p grow" id="a_save">Salva e avvisa</button>
+            <button class="d" id="a_reset">Nuova settimana</button>
+          </div>
+
+          <div class="mu">“Nuova settimana” azzera gli iscritti.</div>
+        `;
+
+        $("a_date").value = match.date || nextThu();
+        $("a_place").value = match.place;
+        $("a_time").value = match.time;
+        $("a_cap").value = match.cap;
+
+        $("a_save").onclick = () => saveMatch(false);
+        $("a_reset").onclick = () => saveMatch(true);
+      }
+    }
+
+    // Shows the "send on WhatsApp" card with a prefilled message
+    function say(msg) {
+      $("notice").innerHTML = `
+        <div class="card">
+          <div class="mu">Avvisa il gruppo WhatsApp:</div>
+
+          <div style="margin: 6px 0;">${esc(msg)}</div>
+
+          <a class="wa"
+             target="_blank"
+             rel="noopener"
+             href="https://wa.me/?text=${encodeURIComponent(msg)}">
+            Invia su WhatsApp
+          </a>
+
+          <button id="cl">Chiudi</button>
+        </div>
+      `;
+
+      $("cl").onclick = () => {
+        $("notice").innerHTML = "";
+      };
+    }
+
+
+    /* ============================================================
+       ACTIONS
+       ============================================================ */
+
+    async function authGo(register) {
+      const username = $("u").value.trim().toLowerCase();
+      const password = $("pw").value;
+
+      if (!/^[a-z0-9_.-]{3,20}$/.test(username)) {
+        return err("Username: 3-20 caratteri (lettere, numeri, . _ -)");
+      }
+      if (password.length < 6) {
+        return err("Password: almeno 6 caratteri");
+      }
+
+      const email = username + DOMAIN;
+
+      try {
+        if (register) {
+          await createUserWithEmailAndPassword(auth, email, password);
+        }
+        else {
+          await signInWithEmailAndPassword(auth, email, password);
+        }
+      }
+      catch (e) {
+        if (e.code === "auth/email-already-in-use") {
+          err("Username già preso");
+        }
+        else if (e.code === "auth/weak-password") {
+          err("Password troppo debole");
+        }
+        else if (register) {
+          err("Registrazione non riuscita");
+        }
+        else {
+          err("Username o password errati");
+        }
+      }
+    }
+
+    // Writes (role = "player" | "sub") or deletes (role = null) an entry
+    async function put(name, role) {
+      try {
+        const ref = doc(db, "entries", name);
+
+        if (role) {
+          await setDoc(ref, { name, role, ts: serverTimestamp() });
+        }
+        else {
+          await deleteDoc(ref);
+        }
+      }
+      catch (e) {
+        err("Operazione non riuscita");
+      }
+    }
+
+    async function join(role) {
+      const old = entries.find(e => e.name === me);
+
+      // Simulate the new list to build the WhatsApp message
+      const simulated = entries
+        .filter(e => e.name !== me)
+        .concat({
+          name: me,
+          role,
+          ts: (old && old.role === role) ? old.ts : Date.now()
+        });
+      const after = derive(simulated, match.cap);
+
+      await put(me, role);
+
+      const isIn = after.conf.some(e => e.name === me);
+
+      if (role === "sub") {
+        say(`@${me} è sostituto. In campo ${after.conf.length}/${match.cap}.`);
+      }
+      else if (isIn) {
+        say(`@${me} ci sta! In campo ${after.conf.length}/${match.cap}.`);
+      }
+      else {
+        say(`@${me} è in lista d'attesa (campo pieno).`);
+      }
+    }
+
+    async function leave() {
+      const before = derive(entries, match.cap).conf.map(e => e.name);
+      const after = derive(entries.filter(e => e.name !== me), match.cap);
+
+      // Who moves from the bench into the pitch (if anyone)
+      const promoted = after.conf.find(e => !before.includes(e.name));
+
+      await put(me, null);
+
+      const promotedText = (before.includes(me) && promoted)
+        ? ` @${promoted.name} entra dalla panchina!`
+        : "";
+
+      say(`@${me} si è ritirato.${promotedText} In campo ${after.conf.length}/${match.cap}.`);
+    }
+
+    async function saveMatch(reset) {
+      const m = {
+        date: $("a_date").value,
+        place: $("a_place").value.trim() || DEF.place,
+        time: $("a_time").value.trim() || DEF.time,
+        cap: Math.max(2, parseInt($("a_cap").value) || DEF.cap)
+      };
+
+      if (reset && !confirm("Azzerare tutti gli iscritti?")) {
+        return;
+      }
+
+      try {
+        await setDoc(doc(db, "match", "current"), m);
+
+        if (reset) {
+          const batch = writeBatch(db);
+          entries.forEach(e => batch.delete(doc(db, "entries", e.name)));
+          await batch.commit();
+        }
+      }
+      catch (e) {
+        return alert("Non autorizzato.");
+      }
+
+      if (reset) {
+        say(`Partita di Giovedì ${fmt(m.date)}. Chi gioca? ${location.href.split("#")[0]}`);
+      }
+      else {
+        const weatherText = weather ? " Meteo: " + weather : "";
+        say(`Aggiornamento partita ${fmt(m.date)}: ${m.place}, ore ${m.time}. Giocatori: ${m.cap}.${weatherText}`);
+      }
+    }
+
+
+    /* ============================================================
+       WEATHER (Open-Meteo)
+       ============================================================ */
+
+    const WMO = code => {
+      if (code === 0) return "☀️ sereno";
+      if (code < 3)   return "⛅ poco nuvoloso";
+      if (code < 49)  return "☁️ nuvoloso/nebbia";
+      if (code < 70)  return "🌧️ pioggia";
+      if (code < 80)  return "❄️ neve";
+      return "⛈️ temporale";
+    };
+
+    async function loadWeather() {
+      weather = "";
+
+      try {
+        const date = match.date;
+        if (!date) return;
+
+        // Forecast only available for the next ~15 days
+        const today = new Date().toISOString().slice(0, 10);
+        const diffDays = (new Date(date) - new Date(today)) / 864e5;
+        if (diffDays < 0 || diffDays > 15) return;
+
+        const url = "https://api.open-meteo.com/v1/forecast"
+          + `?latitude=${LAT}&longitude=${LON}`
+          + "&hourly=temperature_2m,precipitation_probability,weather_code"
+          + `&start_date=${date}&end_date=${date}`
+          + "&timezone=auto";
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        const hour = Math.min(23, parseInt(match.time) || 21);
+        const H = data.hourly;
+
+        weather = `${WMO(H.weather_code[hour])}, `
+          + `${Math.round(H.temperature_2m[hour])}°C, `
+          + `pioggia ${H.precipitation_probability[hour]}%`;
+      }
+      catch (e) {
+        // no forecast available: just hide the weather box
+      }
+
+      render();
+    }
+
+
+    /* ============================================================
+       LIVE LISTENERS
+       ============================================================ */
+
+    onAuthStateChanged(auth, user => {
+      me = user ? user.email.split("@")[0] : null;
+      $("admin").dataset.on = "";
+      render();
+    });
+
+    onSnapshot(doc(db, "match", "current"), snap => {
+      match = { ...DEF, ...(snap.exists() ? snap.data() : {}) };
+      $("admin").dataset.on = "";
+      render();
+      loadWeather();
+    });
+
+    onSnapshot(collection(db, "entries"), snapshot => {
+      entries = snapshot.docs.map(d => {
+        const x = d.data();
+        return {
+          name: x.name,
+          role: x.role,
+          ts: x.ts?.toMillis?.() ?? Date.now()
+        };
+      });
+      render();
+    });
+
+    render();
+  </script>
+</body>
+
+</html>
