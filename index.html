@@ -15,6 +15,7 @@
       --ac2: #e8f3e8;
       --bd: #dfe5da;
       --wa: #25d366;
+      --mp: #1a73e8;
       --er: #c62828;
     }
 
@@ -74,6 +75,7 @@
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+      align-items: center;
     }
 
     .big {
@@ -84,7 +86,9 @@
 
     button,
     input,
-    a.wa {
+    select,
+    a.wa,
+    a.mp {
       font: inherit;
       border-radius: 10px;
       border: 1px solid var(--bd);
@@ -93,7 +97,8 @@
       color: var(--tx);
     }
 
-    input {
+    input,
+    select {
       width: 100%;
       margin-bottom: 8px;
     }
@@ -109,13 +114,29 @@
       border-color: var(--ac);
     }
 
+    button.sm {
+      padding: 4px 8px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    a.wa,
+    a.mp {
+      text-decoration: none;
+      display: inline-block;
+      font-weight: 600;
+    }
+
     a.wa {
       background: var(--wa);
       color: #000;
       border-color: var(--wa);
-      text-decoration: none;
-      display: inline-block;
-      font-weight: 600;
+    }
+
+    a.mp {
+      background: transparent;
+      color: var(--mp);
+      border-color: var(--mp);
     }
 
     button.d {
@@ -132,12 +153,27 @@
     }
 
     li {
-      padding: 3px 0;
+      padding: 4px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
     }
 
-    li.me {
+    li .lbl {
+      flex: 1;
+    }
+
+    li.me .lbl {
       font-weight: 700;
       color: var(--ac);
+    }
+
+    li.guest .lbl::after {
+      content: " (ospite)";
+      font-weight: 400;
+      color: var(--mu);
+      font-size: 12px;
     }
 
     .err {
@@ -167,6 +203,11 @@
       height: 100%;
       background: var(--ac);
     }
+
+    .ghost {
+      background: transparent;
+      border-style: dashed;
+    }
   </style>
 </head>
 
@@ -191,6 +232,7 @@
   </main>
 
   <script type="module">
+    import { firebaseConfig } from "./firebase-config.js";
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import {
       getAuth,
@@ -203,6 +245,7 @@
       getFirestore,
       doc,
       setDoc,
+      updateDoc,
       deleteDoc,
       collection,
       onSnapshot,
@@ -213,16 +256,9 @@
 
     /* ============================================================
        CONFIG
+       (firebaseConfig now lives in firebase-config.js, which is
+       NOT committed to the repo — see README)
        ============================================================ */
-
-    const firebaseConfig = {
-      apiKey: "AIzaSyCkBU0ZMdepE-Tg9CV_fRu4ag9LxxSL4Do",
-      authDomain: "match-organizer-5e6fe.firebaseapp.com",
-      projectId: "match-organizer-5e6fe",
-      storageBucket: "match-organizer-5e6fe.firebasestorage.app",
-      messagingSenderId: "605165237016",
-      appId: "1:605165237016:web:39d76650b23967cd62e46d"
-    };
 
     const ADMIN = "altair9510";                       // must match the Firestore rules
     const LAT = 41.87242232597652;                    // pitch latitude (weather)
@@ -242,13 +278,16 @@
       time: "21:00",
       place: "Centro Sportivo Certosa",
       cap: 10,
-      date: ""
+      date: "",
+      maps: ""
     };
 
     let match = { ...DEF };
-    let entries = [];
+    let entries = [];      // { id, type: "member"|"guest", role, ts, username?, addedBy?, nome?, cognome? }
+    let players = {};      // username -> { nome, cognome }
     let me = null;
     let weather = "";
+    let guestFormOpen = false;
 
 
     /* ============================================================
@@ -276,10 +315,24 @@
       return d.toISOString().slice(0, 10);
     }
 
+    // Display name for any entry (member or guest)
+    function displayName(e) {
+      if (e.type === "guest") {
+        return `${e.nome} ${e.cognome}`;
+      }
+      const p = players[e.username];
+      return p ? `${p.nome} ${p.cognome}` : `@${e.username}`;
+    }
+
+    function myDisplayName() {
+      const p = players[me];
+      return p ? `${p.nome} ${p.cognome}` : `@${me}`;
+    }
+
     // Splits entries into "in campo" (conf) and "riserve" (res).
     // Players beyond the cap wait first, then declared substitutes.
     function derive(list, cap) {
-      const players = list
+      const playersIn = list
         .filter(e => e.role === "player")
         .sort((a, b) => a.ts - b.ts);
 
@@ -288,13 +341,24 @@
         .sort((a, b) => a.ts - b.ts);
 
       return {
-        conf: players.slice(0, cap),
-        res: players.slice(cap).concat(subs)
+        conf: playersIn.slice(0, cap),
+        res: playersIn.slice(cap).concat(subs)
       };
+    }
+
+    // How many players are currently on the pitch, ignoring one entry id
+    // (used before adding/switching someone into "player")
+    function playerCountExcluding(id) {
+      return entries.filter(e => e.role === "player" && e.id !== id).length;
     }
 
     const err = t => {
       const e = $("err");
+      if (e) e.textContent = t;
+    };
+
+    const gerr = t => {
+      const e = $("gerr");
       if (e) e.textContent = t;
     };
 
@@ -306,14 +370,20 @@
     function render() {
       const { conf, res } = derive(entries, match.cap);
       const pct = Math.min(100, conf.length / match.cap * 100);
-      const mine = me && entries.find(e => e.name === me);
+      const mine = me && entries.find(e => e.type === "member" && e.username === me);
 
       // ----- Match header -----
       $("head").innerHTML = `
         <h1>Partita di Giovedì ${fmt(match.date)}</h1>
 
-        <div class="mu">
-          📍 ${esc(match.place)} · 🕘 ${esc(match.time)}
+        <div class="row" style="justify-content: space-between;">
+          <div class="mu">📍 ${esc(match.place)} · 🕘 ${esc(match.time)}</div>
+          ${match.maps ? `
+            <div class="row" style="gap: 6px;">
+              <a class="mp sm" style="padding:4px 8px;font-size:13px;" target="_blank" rel="noopener" href="${esc(match.maps)}">🗺️ Mappa</a>
+              <button class="sm" id="copyMaps">📋 Copia link</button>
+            </div>
+          ` : ""}
         </div>
 
         <div class="row" style="align-items: baseline; margin-top: 6px;">
@@ -328,10 +398,29 @@
         ${weather ? `<div class="note">${weather}</div>` : ""}
       `;
 
+      if (match.maps) {
+        $("copyMaps").onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(match.maps);
+            $("copyMaps").textContent = "✅ Copiato";
+            setTimeout(() => { $("copyMaps").textContent = "📋 Copia link"; }, 1500);
+          }
+          catch (e) {
+            prompt("Copia il link:", match.maps);
+          }
+        };
+      }
+
       // ----- Login / user box -----
       if (!me) {
         $("auth").innerHTML = `
           <h2>Entra con il tuo username</h2>
+
+          <div class="row">
+            <input id="nome" placeholder="Nome" style="flex: 1;">
+            <input id="cognome" placeholder="Cognome" style="flex: 1;">
+          </div>
+          <div class="mu" style="margin: -4px 0 8px;">Nome e cognome servono solo se ti registri la prima volta.</div>
 
           <input
             id="u"
@@ -364,7 +453,7 @@
         else if (mine.role === "sub") {
           status = "Sei sostituto";
         }
-        else if (conf.find(e => e.name === me)) {
+        else if (conf.find(e => e.id === mine.id)) {
           status = "Sei in campo ✅";
         }
         else {
@@ -374,13 +463,19 @@
         $("auth").innerHTML = `
           <div class="row" style="justify-content: space-between; align-items: center;">
             <div>
-              <b>@${esc(me)}</b>
+              <b>${esc(myDisplayName())}</b>
               <div class="mu">${status}</div>
             </div>
             <button id="out">Esci</button>
           </div>
 
           <div class="row" style="margin-top: 10px;" id="acts"></div>
+
+          <div class="row" style="margin-top: 6px;">
+            <button class="ghost grow sm" id="gtoggle">${guestFormOpen ? "✕ Annulla" : "+ Aggiungi giocatore esterno"}</button>
+          </div>
+
+          <div id="gformBox"></div>
 
           <div class="err" id="err"></div>
         `;
@@ -410,14 +505,51 @@
             addButton("Passa a sostituto", "", () => join("sub"));
           }
         }
+
+        $("gtoggle").onclick = () => {
+          guestFormOpen = !guestFormOpen;
+          render();
+        };
+
+        if (guestFormOpen) {
+          $("gformBox").innerHTML = `
+            <div class="card" style="margin-top: 8px; padding: 10px;">
+              <div class="row">
+                <input id="g_nome" placeholder="Nome" style="flex: 1;">
+                <input id="g_cognome" placeholder="Cognome" style="flex: 1;">
+              </div>
+              <select id="g_role">
+                <option value="player">Giocatore</option>
+                <option value="sub">Sostituto</option>
+              </select>
+              <button class="p grow" id="g_add">Aggiungi</button>
+              <div class="err" id="gerr"></div>
+            </div>
+          `;
+          $("g_add").onclick = addGuest;
+        }
       }
 
       // ----- Player lists -----
       const listItems = arr =>
         arr
-          .map(e => `
-            <li class="${e.name === me ? "me" : ""}">@${esc(e.name)}</li>
-          `)
+          .map(e => {
+            const isMine = e.type === "member" && e.username === me;
+            const isMyGuest = e.type === "guest" && e.addedBy === me;
+            const canManage = isMyGuest || (e.type === "guest" && me === ADMIN);
+
+            const manageBtns = canManage ? `
+              <button class="sm" onclick="__toggleGuestRole('${e.id}')">⇄</button>
+              <button class="sm d" onclick="__removeGuest('${e.id}')">✕</button>
+            ` : "";
+
+            return `
+              <li class="${isMine ? "me" : ""} ${e.type === "guest" ? "guest" : ""}">
+                <span class="lbl">${esc(displayName(e))}</span>
+                ${manageBtns}
+              </li>
+            `;
+          })
           .join("")
         || `<li class="mu" style="list-style: none;">— nessuno —</li>`;
 
@@ -440,6 +572,7 @@
 
           <input id="a_date" type="date">
           <input id="a_place" placeholder="Luogo">
+          <input id="a_maps" placeholder="Link Google Maps (facoltativo)">
 
           <div class="row">
             <input id="a_time" placeholder="Ora" style="flex: 1;">
@@ -456,6 +589,7 @@
 
         $("a_date").value = match.date || nextThu();
         $("a_place").value = match.place;
+        $("a_maps").value = match.maps || "";
         $("a_time").value = match.time;
         $("a_cap").value = match.cap;
 
@@ -464,7 +598,8 @@
       }
     }
 
-    // Shows the "send on WhatsApp" card with a prefilled message
+    // Shows the "send on WhatsApp" card with a prefilled message.
+    // Only ever called right after an actual change (join/leave/guest/admin save).
     function say(msg) {
       $("notice").innerHTML = `
         <div class="card">
@@ -494,6 +629,8 @@
        ============================================================ */
 
     async function authGo(register) {
+      const nome = $("nome").value.trim();
+      const cognome = $("cognome").value.trim();
       const username = $("u").value.trim().toLowerCase();
       const password = $("pw").value;
 
@@ -503,12 +640,16 @@
       if (password.length < 6) {
         return err("Password: almeno 6 caratteri");
       }
+      if (register && (!nome || !cognome)) {
+        return err("Inserisci nome e cognome per registrarti");
+      }
 
       const email = username + DOMAIN;
 
       try {
         if (register) {
           await createUserWithEmailAndPassword(auth, email, password);
+          await setDoc(doc(db, "players", username), { nome, cognome, username });
         }
         else {
           await signInWithEmailAndPassword(auth, email, password);
@@ -530,71 +671,123 @@
       }
     }
 
-    // Writes (role = "player" | "sub") or deletes (role = null) an entry
-    async function put(name, role) {
-      try {
-        const ref = doc(db, "entries", name);
-
-        if (role) {
-          await setDoc(ref, { name, role, ts: serverTimestamp() });
-        }
-        else {
-          await deleteDoc(ref);
-        }
-      }
-      catch (e) {
-        err("Operazione non riuscita");
-      }
-    }
-
     async function join(role) {
-      const old = entries.find(e => e.name === me);
+      const old = entries.find(e => e.type === "member" && e.username === me);
+      const myId = me;
 
-      // Simulate the new list to build the WhatsApp message
+      if (role === "player" && playerCountExcluding(myId) >= match.cap) {
+        return err(`Il campo è pieno (${match.cap}/${match.cap}). Puoi iscriverti come sostituto.`);
+      }
+
+      await setDoc(doc(db, "entries", myId), {
+        type: "member",
+        username: me,
+        role,
+        ts: serverTimestamp()
+      });
+
+      // Re-derive locally (approximate) to word the WhatsApp message
       const simulated = entries
-        .filter(e => e.name !== me)
-        .concat({
-          name: me,
-          role,
-          ts: (old && old.role === role) ? old.ts : Date.now()
-        });
+        .filter(e => e.id !== myId)
+        .concat({ id: myId, type: "member", username: me, role, ts: Date.now() });
       const after = derive(simulated, match.cap);
-
-      await put(me, role);
-
-      const isIn = after.conf.some(e => e.name === me);
+      const isIn = after.conf.some(e => e.id === myId);
 
       if (role === "sub") {
-        say(`@${me} è sostituto. In campo ${after.conf.length}/${match.cap}.`);
+        say(`${myDisplayName()} è sostituto. In campo ${after.conf.length}/${match.cap}.`);
       }
       else if (isIn) {
-        say(`@${me} ci sta! In campo ${after.conf.length}/${match.cap}.`);
+        say(`${myDisplayName()} ci sta! In campo ${after.conf.length}/${match.cap}.`);
       }
       else {
-        say(`@${me} è in lista d'attesa (campo pieno).`);
+        say(`${myDisplayName()} è in lista d'attesa (campo pieno).`);
       }
     }
 
     async function leave() {
-      const before = derive(entries, match.cap).conf.map(e => e.name);
-      const after = derive(entries.filter(e => e.name !== me), match.cap);
+      const before = derive(entries, match.cap).conf.map(e => e.id);
+      const after = derive(entries.filter(e => e.id !== me), match.cap);
+      const promoted = after.conf.find(e => !before.includes(e.id));
 
-      // Who moves from the bench into the pitch (if anyone)
-      const promoted = after.conf.find(e => !before.includes(e.name));
-
-      await put(me, null);
+      await deleteDoc(doc(db, "entries", me));
 
       const promotedText = (before.includes(me) && promoted)
-        ? ` @${promoted.name} entra dalla panchina!`
+        ? ` ${displayName(promoted)} entra dalla panchina!`
         : "";
 
-      say(`@${me} si è ritirato.${promotedText} In campo ${after.conf.length}/${match.cap}.`);
+      say(`${myDisplayName()} si è ritirato.${promotedText} In campo ${after.conf.length}/${match.cap}.`);
     }
+
+    async function addGuest() {
+      const nome = $("g_nome").value.trim();
+      const cognome = $("g_cognome").value.trim();
+      const role = $("g_role").value;
+
+      if (!nome || !cognome) {
+        return gerr("Inserisci nome e cognome");
+      }
+      if (role === "player" && playerCountExcluding(null) >= match.cap) {
+        return gerr(`Il campo è pieno (${match.cap}/${match.cap}). Aggiungilo come sostituto.`);
+      }
+
+      const id = "guest_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+      await setDoc(doc(db, "entries", id), {
+        type: "guest",
+        addedBy: me,
+        nome,
+        cognome,
+        role,
+        ts: serverTimestamp()
+      });
+
+      guestFormOpen = false;
+
+      const simulated = entries.concat({ id, type: "guest", nome, cognome, role, ts: Date.now() });
+      const after = derive(simulated, match.cap);
+      const label = role === "sub" ? "sostituto" : "giocatore";
+
+      say(`${myDisplayName()} ha aggiunto ${nome} ${cognome} (${label}). In campo ${after.conf.length}/${match.cap}.`);
+    }
+
+    // Exposed globally so the inline onclick="" in the list items can reach them
+    window.__removeGuest = async function (id) {
+      const g = entries.find(e => e.id === id);
+      if (!g) return;
+
+      const before = derive(entries, match.cap).conf.map(e => e.id);
+      const after = derive(entries.filter(e => e.id !== id), match.cap);
+      const promoted = after.conf.find(e => !before.includes(e.id));
+
+      await deleteDoc(doc(db, "entries", id));
+
+      const promotedText = (before.includes(id) && promoted)
+        ? ` ${displayName(promoted)} entra dalla panchina!`
+        : "";
+
+      say(`${g.nome} ${g.cognome} è stato ritirato.${promotedText} In campo ${after.conf.length}/${match.cap}.`);
+    };
+
+    window.__toggleGuestRole = async function (id) {
+      const g = entries.find(e => e.id === id);
+      if (!g) return;
+
+      const newRole = g.role === "sub" ? "player" : "sub";
+
+      if (newRole === "player" && playerCountExcluding(id) >= match.cap) {
+        return alert(`Il campo è pieno (${match.cap}/${match.cap}).`);
+      }
+
+      await updateDoc(doc(db, "entries", id), { role: newRole });
+
+      say(`${g.nome} ${g.cognome} è passato a ${newRole === "sub" ? "sostituto" : "giocatore"}.`);
+    };
 
     async function saveMatch(reset) {
       const m = {
         date: $("a_date").value,
         place: $("a_place").value.trim() || DEF.place,
+        maps: $("a_maps").value.trim(),
         time: $("a_time").value.trim() || DEF.time,
         cap: Math.max(2, parseInt($("a_cap").value) || DEF.cap)
       };
@@ -608,7 +801,7 @@
 
         if (reset) {
           const batch = writeBatch(db);
-          entries.forEach(e => batch.delete(doc(db, "entries", e.name)));
+          entries.forEach(e => batch.delete(doc(db, "entries", e.id)));
           await batch.commit();
         }
       }
@@ -616,12 +809,14 @@
         return alert("Non autorizzato.");
       }
 
+      const mapsText = m.maps ? ` 🗺️ ${m.maps}` : "";
+
       if (reset) {
-        say(`Partita di Giovedì ${fmt(m.date)}. Chi gioca? ${location.href.split("#")[0]}`);
+        say(`Partita di Giovedì ${fmt(m.date)}. Chi gioca? ${location.href.split("#")[0]}${mapsText}`);
       }
       else {
         const weatherText = weather ? " Meteo: " + weather : "";
-        say(`Aggiornamento partita ${fmt(m.date)}: ${m.place}, ore ${m.time}. Giocatori: ${m.cap}.${weatherText}`);
+        say(`Aggiornamento partita ${fmt(m.date)}: ${m.place}, ore ${m.time}. Giocatori: ${m.cap}.${weatherText}${mapsText}`);
       }
     }
 
@@ -646,7 +841,6 @@
         const date = match.date;
         if (!date) return;
 
-        // Forecast only available for the next ~15 days
         const today = new Date().toISOString().slice(0, 10);
         const diffDays = (new Date(date) - new Date(today)) / 864e5;
         if (diffDays < 0 || diffDays > 15) return;
@@ -681,7 +875,9 @@
 
     onAuthStateChanged(auth, user => {
       me = user ? user.email.split("@")[0] : null;
+      guestFormOpen = false;
       $("admin").dataset.on = "";
+      $("notice").innerHTML = "";
       render();
     });
 
@@ -696,11 +892,22 @@
       entries = snapshot.docs.map(d => {
         const x = d.data();
         return {
-          name: x.name,
+          id: d.id,
+          type: x.type || "member",
           role: x.role,
-          ts: x.ts?.toMillis?.() ?? Date.now()
+          ts: x.ts?.toMillis?.() ?? Date.now(),
+          username: x.username,
+          addedBy: x.addedBy,
+          nome: x.nome,
+          cognome: x.cognome
         };
       });
+      render();
+    });
+
+    onSnapshot(collection(db, "players"), snapshot => {
+      players = {};
+      snapshot.docs.forEach(d => { players[d.id] = d.data(); });
       render();
     });
 
