@@ -399,7 +399,7 @@
 
         <div class="row" style="align-items: baseline; margin-top: 6px;">
           <span class="big">${conf.length}/${match.cap}</span>
-          <span class="mu">giocatori · ${res.length} in panchina</span>
+          <span class="mu">giocatori · ${res.length} sostituti</span>
         </div>
 
         <div class="bar">
@@ -787,7 +787,7 @@
       await deleteDoc(doc(db, "entries", me));
 
       const promotedText = (before.includes(me) && promoted)
-        ? ` ${displayName(promoted)} entra dalla panchina!`
+        ? ` ${displayName(promoted)} entra dai sostituti!`
         : "";
 
       say(`${myDisplayName()} si è ritirato.${promotedText} In campo ${after.conf.length}/${match.cap}.`);
@@ -837,7 +837,7 @@
       await deleteDoc(doc(db, "entries", id));
 
       const promotedText = (before.includes(id) && promoted)
-        ? ` ${displayName(promoted)} entra dalla panchina!`
+        ? ` ${displayName(promoted)} entra dai sostituti!`
         : "";
 
       say(`${g.nome} ${g.cognome} è stato ritirato.${promotedText} In campo ${after.conf.length}/${match.cap}.`);
