@@ -244,6 +244,7 @@
     import {
       getFirestore,
       doc,
+      getDoc,
       setDoc,
       updateDoc,
       deleteDoc,
@@ -669,11 +670,12 @@
       return null;
     }
 
-    // Single entry point: try to sign in. If it fails, we can't tell from
-    // Firebase's error alone whether the account doesn't exist or the
-    // password is wrong (this is intentional, for privacy) — so we move to
-    // the nome/cognome step optimistically. finishRegister() below sorts out
-    // the "actually it already existed" case.
+    // Single entry point: try to sign in. If it fails, check the public
+    // "players" collection to find out whether this username was already
+    // registered by someone — that tells us the real reason, instead of
+    // guessing from Firebase's (intentionally vague) sign-in error:
+    //   - username already registered -> wrong password, say so, stop here
+    //   - username not found anywhere -> genuinely new, go to nome/cognome
     async function continueAuth() {
       const username = $("u").value.trim().toLowerCase();
       const password = $("pw").value;
@@ -684,18 +686,33 @@
       try {
         await signInWithEmailAndPassword(auth, username + DOMAIN, password);
         // success: onAuthStateChanged takes over from here
+        return;
       }
       catch (e) {
-        regUsername = username;
-        regPassword = password;
-        registerStep = true;
-        render();
+        // fall through to the existence check below
       }
+
+      try {
+        const snap = await getDoc(doc(db, "players", username));
+        if (snap.exists()) {
+          return err("Questo username è già registrato: controlla la password.");
+        }
+      }
+      catch (e) {
+        return err("Errore di rete, riprova.");
+      }
+
+      // Username not found anywhere — this really is a new account
+      regUsername = username;
+      regPassword = password;
+      registerStep = true;
+      render();
     }
 
-    // Only reached for what looks like a new account. Creates it — unless
-    // it turns out the username was already taken, in which case the
-    // earlier sign-in must have failed because of a wrong password.
+    // Only reached for a genuinely new username. Creates the account —
+    // the auth/email-already-in-use fallback here is just a safety net for
+    // a rare race (two people registering the same username at once, or an
+    // earlier registration that created the login but not the profile).
     async function finishRegister() {
       const nome = $("nome").value.trim();
       const cognome = $("cognome").value.trim();
@@ -712,7 +729,7 @@
         if (e.code === "auth/email-already-in-use") {
           registerStep = false;
           render();
-          err("Username già registrato: password errata.");
+          err("Username già registrato: controlla la password.");
         }
         else if (e.code === "auth/weak-password") {
           err("Password troppo debole");
