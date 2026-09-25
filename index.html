@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Partita del Giovedì</title>
+  <title>Partita del gruppo</title>
   <style>
     :root {
       --bg: #f4f6f2;
@@ -288,6 +288,9 @@
     let me = null;
     let weather = "";
     let guestFormOpen = false;
+    let registerStep = false;   // true = we're on the "nome/cognome" step of a new registration
+    let regUsername = "";
+    let regPassword = "";
 
 
     /* ============================================================
@@ -308,11 +311,18 @@
       ? d.split("-").reverse().slice(0, 2).join("/")
       : "";
 
-    // Date of the next Thursday, as "YYYY-MM-DD"
-    function nextThu() {
-      const d = new Date();
-      d.setDate(d.getDate() + ((4 - d.getDay() + 7) % 7));
-      return d.toISOString().slice(0, 10);
+    // "YYYY-MM-DD" -> "Giovedì" / "Martedì" / ... (parsed as a local date, no TZ shift)
+    function dayName(dateStr) {
+      if (!dateStr) return "";
+      const giorni = ["Domenica", "Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"];
+      const [y, m, d] = dateStr.split("-").map(Number);
+      return giorni[new Date(y, m - 1, d).getDay()];
+    }
+
+    // "Partita di Martedì 30/09" — falls back gracefully if no date is set yet
+    function matchTitle(dateStr) {
+      const dn = dayName(dateStr);
+      return dn ? `Partita di ${dn} ${fmt(dateStr)}` : "Partita";
     }
 
     // Display name for any entry (member or guest)
@@ -374,7 +384,7 @@
 
       // ----- Match header -----
       $("head").innerHTML = `
-        <h1>Partita di Giovedì ${fmt(match.date)}</h1>
+        <h1>${esc(matchTitle(match.date))}</h1>
 
         <div class="row" style="justify-content: space-between;">
           <div class="mu">📍 ${esc(match.place)} · 🕘 ${esc(match.time)}</div>
@@ -412,27 +422,25 @@
       }
 
       // ----- Login / user box -----
-      if (!me) {
+      if (!me && !registerStep) {
+        // Step 1: just username + password. We don't yet know if this
+        // is an existing member (Accedi) or a brand new one (Registrati).
         $("auth").innerHTML = `
           <h2>Entra con il tuo username</h2>
-
-          <div class="row">
-            <input id="nome" placeholder="Nome" style="flex: 1;">
-            <input id="cognome" placeholder="Cognome" style="flex: 1;">
-          </div>
-          <div class="mu" style="margin: -4px 0 8px;">Nome e cognome servono solo se ti registri la prima volta.</div>
 
           <input
             id="u"
             placeholder="username (unico)"
             autocapitalize="none"
-            autocomplete="username">
+            autocomplete="username"
+            value="${esc(regUsername)}">
 
           <input
             id="pw"
             type="password"
             placeholder="password (min. 6 caratteri)"
-            autocomplete="current-password">
+            autocomplete="current-password"
+            value="${esc(regPassword)}">
 
           <div class="row">
             <button class="p grow" id="reg">Registrati</button>
@@ -442,8 +450,33 @@
           <div class="err" id="err"></div>
         `;
 
-        $("reg").onclick = () => authGo(true);
-        $("log").onclick = () => authGo(false);
+        $("reg").onclick = () => startRegister();
+        $("log").onclick = () => doLogin();
+      }
+      else if (!me && registerStep) {
+        // Step 2 (new accounts only): ask for nome/cognome, then create the account.
+        $("auth").innerHTML = `
+          <h2>Benvenuto! Come ti chiami?</h2>
+          <div class="mu" style="margin: -4px 0 8px;">Username: @${esc(regUsername)}</div>
+
+          <div class="row">
+            <input id="nome" placeholder="Nome" style="flex: 1;">
+            <input id="cognome" placeholder="Cognome" style="flex: 1;">
+          </div>
+
+          <div class="row">
+            <button class="p grow" id="confirmReg">Conferma registrazione</button>
+            <button class="grow" id="backReg">Indietro</button>
+          </div>
+
+          <div class="err" id="err"></div>
+        `;
+
+        $("confirmReg").onclick = () => finishRegister();
+        $("backReg").onclick = () => {
+          registerStep = false;
+          render();
+        };
       }
       else {
         let status;
@@ -587,7 +620,7 @@
           <div class="mu">“Nuova settimana” azzera gli iscritti.</div>
         `;
 
-        $("a_date").value = match.date || nextThu();
+        $("a_date").value = match.date || new Date().toISOString().slice(0, 10);
         $("a_place").value = match.place;
         $("a_maps").value = match.maps || "";
         $("a_time").value = match.time;
@@ -628,45 +661,73 @@
        ACTIONS
        ============================================================ */
 
-    async function authGo(register) {
-      const nome = $("nome").value.trim();
-      const cognome = $("cognome").value.trim();
+    // Basic format check shared by login and registration
+    function checkCredentials(username, password) {
+      if (!/^[a-z0-9_.-]{3,20}$/.test(username)) {
+        return "Username: 3-20 caratteri (lettere, numeri, . _ -)";
+      }
+      if (password.length < 6) {
+        return "Password: almeno 6 caratteri";
+      }
+      return null;
+    }
+
+    // "Accedi" — existing member, credentials are enough, no name/surname asked
+    async function doLogin() {
       const username = $("u").value.trim().toLowerCase();
       const password = $("pw").value;
 
-      if (!/^[a-z0-9_.-]{3,20}$/.test(username)) {
-        return err("Username: 3-20 caratteri (lettere, numeri, . _ -)");
-      }
-      if (password.length < 6) {
-        return err("Password: almeno 6 caratteri");
-      }
-      if (register && (!nome || !cognome)) {
-        return err("Inserisci nome e cognome per registrarti");
-      }
-
-      const email = username + DOMAIN;
+      const problem = checkCredentials(username, password);
+      if (problem) return err(problem);
 
       try {
-        if (register) {
-          await createUserWithEmailAndPassword(auth, email, password);
-          await setDoc(doc(db, "players", username), { nome, cognome, username });
-        }
-        else {
-          await signInWithEmailAndPassword(auth, email, password);
-        }
+        await signInWithEmailAndPassword(auth, username + DOMAIN, password);
+      }
+      catch (e) {
+        err("Username o password errati");
+      }
+    }
+
+    // "Registrati" step 1 — just validates and holds onto username/password,
+    // then reveals the nome/cognome step. No account is created yet.
+    function startRegister() {
+      const username = $("u").value.trim().toLowerCase();
+      const password = $("pw").value;
+
+      const problem = checkCredentials(username, password);
+      if (problem) return err(problem);
+
+      regUsername = username;
+      regPassword = password;
+      registerStep = true;
+      render();
+    }
+
+    // "Conferma registrazione" step 2 — nome/cognome required, then create the account
+    async function finishRegister() {
+      const nome = $("nome").value.trim();
+      const cognome = $("cognome").value.trim();
+
+      if (!nome || !cognome) {
+        return err("Inserisci nome e cognome");
+      }
+
+      try {
+        await createUserWithEmailAndPassword(auth, regUsername + DOMAIN, regPassword);
+        await setDoc(doc(db, "players", regUsername), { nome, cognome, username: regUsername });
       }
       catch (e) {
         if (e.code === "auth/email-already-in-use") {
-          err("Username già preso");
+          // Not actually a new user — send them back to the login step
+          registerStep = false;
+          render();
+          err('Username già registrato. Usa "Accedi".');
         }
         else if (e.code === "auth/weak-password") {
           err("Password troppo debole");
         }
-        else if (register) {
-          err("Registrazione non riuscita");
-        }
         else {
-          err("Username o password errati");
+          err("Registrazione non riuscita");
         }
       }
     }
@@ -812,11 +873,11 @@
       const mapsText = m.maps ? ` 🗺️ ${m.maps}` : "";
 
       if (reset) {
-        say(`Partita di Giovedì ${fmt(m.date)}. Chi gioca? ${location.href.split("#")[0]}${mapsText}`);
+        say(`${matchTitle(m.date)}. Chi gioca? ${location.href.split("#")[0]}${mapsText}`);
       }
       else {
         const weatherText = weather ? " Meteo: " + weather : "";
-        say(`Aggiornamento partita ${fmt(m.date)}: ${m.place}, ore ${m.time}. Giocatori: ${m.cap}.${weatherText}${mapsText}`);
+        say(`Aggiornamento ${matchTitle(m.date).toLowerCase()}: ${m.place}, ore ${m.time}. Giocatori: ${m.cap}.${weatherText}${mapsText}`);
       }
     }
 
@@ -876,6 +937,9 @@
     onAuthStateChanged(auth, user => {
       me = user ? user.email.split("@")[0] : null;
       guestFormOpen = false;
+      registerStep = false;
+      regUsername = "";
+      regPassword = "";
       $("admin").dataset.on = "";
       $("notice").innerHTML = "";
       render();
