@@ -717,13 +717,19 @@
       const nome = $("nome").value.trim();
       const cognome = $("cognome").value.trim();
 
+      // Snapshot these now: the moment createUserWithEmailAndPassword
+      // succeeds, onAuthStateChanged fires and resets regUsername/regPassword —
+      // reading the shared variables again after that point would be empty.
+      const username = regUsername;
+      const password = regPassword;
+
       if (!nome || !cognome) {
         return err("Inserisci nome e cognome");
       }
 
       try {
-        await createUserWithEmailAndPassword(auth, regUsername + DOMAIN, regPassword);
-        await setDoc(doc(db, "players", regUsername), { nome, cognome, username: regUsername });
+        await createUserWithEmailAndPassword(auth, username + DOMAIN, password);
+        await setDoc(doc(db, "players", username), { nome, cognome, username });
       }
       catch (e) {
         if (e.code === "auth/email-already-in-use") {
